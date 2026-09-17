@@ -1,0 +1,18 @@
+# 虚拟环境（几百 MB，绝不入库）
+.venv/
+venv/
+env/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+
+# 仿真台运行时产物
+_studio_latest.png
+studio_*.png
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

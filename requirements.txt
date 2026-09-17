@@ -1,0 +1,6 @@
+# 依赖：MuJoCo 3.13（已在 Python 3.11 上验证）
+# 没有用 scipy —— 全部只靠 numpy/mujoco/PIL/matplotlib，方便装
+mujoco==3.13.0
+numpy>=1.24
+matplotlib>=3.7
+pillow>=10.0
