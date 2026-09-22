@@ -1,4 +1,163 @@
-# 料箱抓取点选择 Demo（MuJoCo 仿真）— 附一次判据自查
+# Depth-Image Grasp-Point Selection in MuJoCo — with a self-refuted criterion
+
+**English** · [中文版 ↓](#中文版)
+
+Picking grasp points for a parallel-jaw gripper inside a simulated bin using a **single depth image**,
+then quantifying a judging criterion that I later **refuted myself**.
+
+> In one line: this is **not** "I built a bin-picking system". It is a **minimal validation** — implement the
+> most naive grasp-point selection, quantify it, discover that the criterion I was judging it with is
+> physically wrong, and write that down.
+
+![diagnosis](criterion_failure_evidence.png)
+
+---
+
+## 1. What it does
+
+1. Builds a bin with randomly placed parts (box / cylinder / sphere) in MuJoCo; renders **RGB / depth / segmentation**.
+2. Finds a grasp point per object **from the depth image only**: 18 orientations × 5 scan lines, using the
+   **projected width** in that direction as the gripper opening; width within 2.5–8.5 cm is feasible, then
+   scored 0.5/0.5 on "width close to ideal" and "flat contact surface"; non-maximum suppression (NMS, 40 px)
+   leaves the top 3 candidates.
+3. Scores the result **afterwards** against the segmentation ground truth: same object for both contact
+   points, closing path clear, and the "descend from above" corridor clear.
+4. Runs a paired comparison (camera elevation × scene density) and a **failure census**.
+
+**Output**: a four-panel figure (grasp annotations / RGB / depth / grasp-quality heatmap) plus statistics.
+
+## 2. Headline finding
+
+The failure census showed that in stacked scenes failures are **almost entirely** caused by
+"the 40-px corridor above the contact point is blocked" (23 / 20 / 25 of 30 scenes at 30° / 45° / 60°),
+while "no candidate found" is always 0. That sent me back to check the criterion itself:
+
+- At a camera elevation of 30°, **"up" in the image corresponds to world direction R[:,1], which is 30° off world +Z.**
+- Back-projecting the "40-px corridor above the contact point" to world coordinates pixel by pixel puts the
+  point flagged as blocking at **6.1 cm laterally away and only 3.7 cm higher** — 58.8° off vertical, and
+  *farther* in depth (0.984 m vs 0.950 m).
+- So the corridor is a line that slants up and outwards in the world: **it flags a distant object behind and
+  above, not the path the gripper would actually take.**
+
+**Result that can go into a report:**
+
+> A single depth image **cannot** answer whether the gripper can enter the grasp position from directly
+> above. "Is the space above the grasp point occupied?" is not a question you can answer by searching
+> upwards in the image — you have to go back to **3D geometry in world coordinates**.
+
+**Fix and what is already done**: back-project the contact point to world coordinates, place a real
+geometric body there (a cylinder of radius 3 cm, height 5 cm, representing the space the gripper needs),
+and use MuJoCo's `mj_geomDistance` for a **signed surface-distance** test (negative = penetration).
+In the same case:
+
+| Cylinder radius | Nearest **other** object to the cylinder surface |
+|---|---|
+| 0.5 cm | +2.00 cm |
+| 1.0 cm | +1.50 cm |
+| 2.0 cm | +0.50 cm |
+| 3.0 cm | **−0.50 cm (penetration)** |
+
+→ This gripper opens 5.47 cm, while the nearest neighbour surface is only **2.50 cm** from the line above
+the grasp point. Whether that counts as "blocked" **depends on finger thickness and approach method** —
+i.e. the gripper model has to be defined first. Replacing a pixel criterion with a 3D criterion is not a
+one-line change.
+
+**⚠️ The re-test is not finished**: the 3D check is not wired into `run_scene` yet, the 6-cell × 30-scene
+table has **not** been re-run, so this repository **does not and should not contain a "new success rate"**.
+The single case only shows that the old criterion misjudges and what the correct one should look like.
+The full diagnosis (intrinsics derivation, depth convention, pixel↔world round-trip self-check, API
+calibration, per-pixel corridor table) is in
+[`criterion_failure_evidence.md`](criterion_failure_evidence.md).
+
+## 3. Results (paired comparison, identical seeds 0–29)
+
+**Criterion**: both contact points on the same object **+** closing path unobstructed **+** 40-px corridor
+directly above the contact point unobstructed; only the **top-1** candidate is counted (top 3 are for display).
+
+| Scene | Camera elevation | Grasp selected | Grasp valid | Valid rate |
+|---|---|---|---|---|
+| Sparse (6 objects) | 30° | 30/30 | 9/30 | 30% |
+| Sparse | 45° | 30/30 | 11/30 | 37% |
+| Sparse | 60° | 30/30 | 8/30 | 27% |
+| Stacked (12 objects) | 30° | 30/30 | 3/30 | 10% |
+| Stacked | 45° | 30/30 | 6/30 | 20% |
+| Stacked | 60° | 30/30 | 3/30 | 10% |
+
+⚠️ **These numbers are not a "grasp success rate".** They are a valid rate under my own criterion, top-1
+only, in pure simulation and in 2D image space — with no collision checking, no kinematics, and no real robot.
+
+## 4. Reproduce
+
+Python 3.11, MuJoCo 3.13 (`mujoco/numpy/matplotlib/pillow`, see `requirements.txt`).
+
+```bash
+pip install -r requirements.txt
+
+python bin_picking_demo.py 30    # 30 scenes (default: sparse, 6 objects) -> demo_result.png + demo_summary.txt
+python compare_angles.py 30      # paired comparison: elevation 30/45/60° × sparse/stacked, 30 scenes each
+python census.py 30              # failure census: 5 classes
+```
+
+Results are **fully deterministic** (fixed random seeds 0–29, no GPU, no time dependence), so they can be
+checked item by item:
+
+| Command | Expected output |
+|---|---|
+| `census.py 30` | `0 / 0 / 4 / 23 / 3` (no candidate / two objects / closing path blocked / top corridor blocked / success) |
+| `compare_angles.py 30` | sparse 30% / 37% / 27% (30/45/60°); stacked 10% / 20% / 10% |
+
+On Windows there are two double-click entries for non-technical users: `run_studio.bat` (grasp studio,
+turn the dials and see the result immediately) and `run_compare.bat` (one-click paired comparison).
+All script outputs are **relative to the script directory**, so the repo runs after any clone.
+
+## 5. Known limitations (honest list)
+
+- **The code was developed with AI assistance**: the author set the goals, drove the iterations, ran and
+  verified the results. Core functions (`grasp_for_object`, the verdict block in `run_scene`,
+  `census.classify`) can be explained line by line by the author.
+- The criterion is a **2D image-space** approximation: no collision checking, no kinematic reachability,
+  no gripper model.
+- A **single depth image** only sees the first surface; there is no information behind objects and no second view.
+- Simulated objects are regular (box / cylinder / sphere); real bins contain reflective, transparent and
+  heavily occluded parts.
+- Scene randomness is in-plane only (x, y random); height is a deterministic stack. **No repeated-run
+  variance, no confidence intervals.**
+- No physical-robot validation yet (next: RealSense + arm in the loop).
+
+## 6. Layout
+
+```
+bin_picking_demo.py              main program: scene / depth image / grasp-point selection / scoring / 4-panel figure
+census.py                        failure census, 5 classes (what started the criterion investigation)
+compare_angles.py                paired comparison: elevation × density
+explain_why_criterion_fails.py   criterion refutation: intrinsics / back-projection self-check / world-space clearance   <- newest
+probe_sensitivity.py             single-pixel back-projection error + cylinder-radius sensitivity
+clearance_check.py               per-object clearance check with the target itself excluded
+explain_metric.py, explain_figures.py   two explanatory figures
+grasp_studio.py, run_studio.bat  grasp studio (Tkinter, double-clickable)
+compare_result.md                comparison table (**cite this one in a report**)
+failure_census.txt               failure attribution table
+criterion_failure_evidence.md/.png       full evidence for the criterion refutation
+上手指南.md / demo_guide.pdf      glossary, two-week onboarding route, corrections log, number conventions (Chinese)
+```
+
+**Number-convention warning**: this directory has historically contained four sets of numbers (27/30 = 90%
+from the old criterion, 0/5 from a 5-scene run, the current 27–37% / 10–20%, and the failure attribution).
+**Cite only `compare_result.md` and `failure_census.txt`**; the rest are intermediate artefacts.
+
+## 7. Next steps
+
+1. **Define the gripper model** (finger thickness, approach method) → wire the 3D clearance criterion into
+   `run_scene` → re-run the 6 cells × 30 scenes (the re-test).
+2. 6D object pose estimation (currently only a 2D grasp rectangle; no object orientation or flipping).
+3. Real robot: RealSense D435 + arm, closing the loop on the selected grasp point.
+4. A second view / active view selection, to handle the "visible but not graspable from above" case.
+
+---
+
+# 中文版
+
+## 料箱抓取点选择 Demo（MuJoCo 仿真）— 附一次判据自查
 
 用**单张深度图**在仿真料箱里选平行夹爪的抓取点，并量化一个我们后来自己推翻的判定标准。
 
