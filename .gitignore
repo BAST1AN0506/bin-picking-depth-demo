@@ -16,3 +16,13 @@ studio_*.png
 .idea/
 Thumbs.db
 desktop.ini
+
+# 本轮复测的运行日志
+_criterion3d_run.log
+
+# 私人文档：策略笔记与旧版对外摘要（不进公开仓库）
+一页纸_机构仿真轴.md
+*_demo_summary_EN.pdf
+*_demo_summary_EN_chk.png
+*_demo요약_KR.pdf
+*_demo요약_KR_chk.png
